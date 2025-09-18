@@ -1,0 +1,4 @@
+fastapi==0.115.0
+uvicorn[standard]==0.23.2
+python-pptx==0.6.21
+pillow==10.0.0
