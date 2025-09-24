@@ -56,7 +56,7 @@ ALLOWED_ORIGINS = [
     "https://isagarcivill09.wixsite.com/turop/tienda",
     "https://isagarcivill09-wixsite-com.filesusr.com",
     "https://www.dipli.ai/preparaci%C3%B3n",
-    "https://www-dipli-ai.filesusr.com"
+    "https://www-dipli-ai.filesusr.com",
 ]
 
 app.add_middleware(
@@ -65,6 +65,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"https://.*\.filesusr\.com",
 )
 
 # =========================
@@ -157,45 +158,22 @@ def process_presentation(file_bytes: bytes, filename: str) -> bytes:
 # Endpoints
 # =========================
 @app.post("/procesar/")
-async def procesar(file: UploadFile = File(...)):
-    if not file.filename.endswith(".xlsx"):
-        raise HTTPException(status_code=400, detail="El archivo debe ser .xlsx")
+async def procesar_pptx(request: Request, file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".pptx"):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .pptx válido")
 
+    file_bytes = await file.read()
     try:
-        wb = openpyxl.load_workbook(file.file)
-        hoja = wb.active
+        result_bytes = process_presentation(file_bytes, file.filename)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"No se pudo abrir el archivo: {e}")
+        raise HTTPException(status_code=500, detail=f"Error procesando PPTX: {e}")
 
-    errores = []
-    errores.extend(validar_encabezados(hoja))
-    errores.extend(buscar_preguntas_duplicadas(hoja))
-    errores.extend(buscar_caracteres_prohibidos(hoja))
+    final_name = file.filename.replace(".pptx", "_FORMATEADO.pptx")
+    token = register_download(result_bytes, final_name, PPTX_MEDIA_TYPE)
 
-    # Crear reporte TXT
-    txt_bytes = BytesIO()
-    if not errores:
-        txt_bytes.write("✅ VALIDACIÓN EXITOSA: No se encontraron errores.\n".encode("utf-8"))
-    else:
-        txt_bytes.write("❌ VALIDACIÓN FALLIDA: Se encontraron errores:\n\n".encode("utf-8"))
-        for err in errores:
-            txt_bytes.write(f"{err}\n".encode("utf-8"))
-    txt_bytes.seek(0)
-
-    final_name = (
-        f"reporte_errores_{os.path.splitext(file.filename)[0]}_"
-        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    )
-    token = register_download(txt_bytes.getvalue(), final_name, "text/plain; charset=utf-8")
-
-    # 🔑 Ahora incluimos también la URL completa de descarga
-    download_url = f"https://formateador-pptx.onrender.com/download/{token}"
-
-    return JSONResponse({
-        "token": token,
-        "filename": final_name,
-        "download_url": download_url
-    })
+    base_url = str(request.base_url).rstrip('/')
+    download_url = f"{base_url}/download/{token}"
+    return {"download_url": download_url, "expires_in_seconds": DOWNLOAD_TTL_SECS}
 
 
 @app.get("/download/{token}")
@@ -224,6 +202,5 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "message": "API funcionando correctamente"}
-
 
 
