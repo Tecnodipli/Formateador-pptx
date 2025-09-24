@@ -195,6 +195,7 @@ async def procesar(file: UploadFile = File(...)):
         "token": token,
         "filename": final_name,
         "download_url": download_url
+    })
 
 
 @app.get("/download/{token}")
@@ -223,5 +224,6 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "message": "API funcionando correctamente"}
+
 
 
