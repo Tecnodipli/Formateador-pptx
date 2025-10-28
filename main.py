@@ -39,10 +39,6 @@ TITLE_SIZE = 20
 TITLE_COLOR = RGBColor(75, 0, 130)   # morado oscuro
 NORMAL_COLOR = RGBColor(0, 0, 0)     # negro
 FONT = "Century Gothic"
-
-LEFT_MARGIN_IN = 0.25
-BOTTOM_MARGIN_IN = 0.25
-
 EMU_PER_INCH = 914400
 
 # =========================
@@ -73,7 +69,7 @@ app.add_middleware(
 # Descargas temporales
 # =========================
 DOWNLOADS: dict[str, tuple[bytes, str, str, datetime]] = {}
-DOWNLOAD_TTL_SECS = 900  # 15 minutos
+DOWNLOAD_TTL_SECS = 900
 PPTX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
@@ -92,7 +88,7 @@ def register_download(data: bytes, filename: str, media_type: str) -> str:
     return token
 
 # =========================
-# Funciones de formateo
+# Formato de texto
 # =========================
 def format_run(run):
     run.font.name = FONT
@@ -115,78 +111,62 @@ def apply_rules(shape):
                 for p in cell.text_frame.paragraphs:
                     for r in p.runs:
                         format_run(r)
-    if getattr(shape, "shape_type", None) == 6:  # Grupo
+    if getattr(shape, "shape_type", None) == 6:
         for s in shape.shapes:
             apply_rules(s)
 
-
+# =========================
+# Procesamiento principal
+# =========================
 def process_presentation(file_bytes: bytes, filename: str) -> bytes:
     prs = Presentation(io.BytesIO(file_bytes))
 
-    def _bbox_union(shapes):
-        """Devuelve (left, top, width, height) en EMUs que cubre todos los shapes dados."""
-        lefts = [s.left for s in shapes]
-        tops = [s.top for s in shapes]
-        rights = [s.left + s.width for s in shapes]
-        bottoms = [s.top + s.height for s in shapes]
-        return min(lefts), min(tops), max(rights) - min(lefts), max(bottoms) - min(tops)
-
-    # --- Insertar logo solo en la primera diapositiva, centrado respecto al bloque de texto ---
     if len(prs.slides) > 0:
         slide0 = prs.slides[0]
 
-        # 1) Buscar placeholders de título/subtítulo con texto
-        title_like = []
+        # Buscar shape principal con texto (título)
+        title_shape = None
         for s in slide0.shapes:
-            try:
-                if not s.is_placeholder:
-                    continue
-                ph_type = s.placeholder_format.type
-                if ph_type in (
-                    PP_PLACEHOLDER_TYPE.TITLE,
-                    PP_PLACEHOLDER_TYPE.CENTER_TITLE,
-                    PP_PLACEHOLDER_TYPE.SUBTITLE,
-                ):
-                    if hasattr(s, "text_frame") and s.text_frame and s.text_frame.text.strip():
-                        title_like.append(s)
-            except Exception:
-                pass
+            if hasattr(s, "text_frame") and s.text_frame and s.text_frame.text.strip():
+                title_shape = s
+                break
 
-        # 2) Si no hay placeholders útiles, tomar el cuadro de texto más grande
-        if not title_like:
-            text_shapes = []
-            for s in slide0.shapes:
-                if hasattr(s, "text_frame") and s.text_frame and s.text_frame.text.strip():
-                    text_shapes.append(s)
-            if text_shapes:
-                title_like = [max(text_shapes, key=lambda x: x.width * x.height)]
+        if title_shape:
+            # Calcular zona real de texto (solo las líneas ocupadas)
+            text_height = 0
+            line_spacing = 0
+            for p in title_shape.text_frame.paragraphs:
+                if p.text.strip():
+                    font_size = None
+                    for r in p.runs:
+                        if r.font.size:
+                            font_size = r.font.size.pt
+                            break
+                    if font_size:
+                        text_height += font_size * 1.3
+            if text_height == 0:
+                text_height = (title_shape.height / EMU_PER_INCH) * 0.6
 
-        # 3) Centrar logo dentro de esa caja de referencia
-        if title_like:
-            ref_left, ref_top, ref_w, ref_h = _bbox_union(title_like)
+            # Coordenadas del shape
+            ref_left = title_shape.left
+            ref_top = title_shape.top
+            ref_w = title_shape.width
+            ref_h = title_shape.height
 
-            # Tamaño "medio": ~35% del ancho del bloque de texto (entre 1.2" y 4.5")
-            ref_w_in = ref_w / EMU_PER_INCH
-            logo_w_in = max(1.2, min(ref_w_in * 0.35, 4.5))
-
+            # Insertar logo justo debajo del texto visible
+            logo_w_in = max(1.5, min((ref_w / EMU_PER_INCH) * 0.4, 5))
             pic = slide0.shapes.add_picture(
                 DEFAULT_LOGO_PATH,
                 left=Inches(0), top=Inches(0), width=Inches(logo_w_in)
             )
-
-            # Posicionar centrado dentro de la caja
             img_w = pic.width
             img_h = pic.height
+
+            # Centrar horizontalmente con el texto y ubicar justo debajo
             pic.left = ref_left + (ref_w - img_w) // 2
-            pic.top = ref_top + (ref_h - img_h) // 2
+            pic.top = ref_top + int(text_height * 1.1 * EMU_PER_INCH / 72)
 
-            # Si quieres bajarlo un poco dentro del bloque, descomenta:
-            # from pptx.util import Pt
-            # pic.top += Inches(0.2)
-
-        # Si no hay texto en la portada, no se inserta el logo
-
-    # --- Aplicar formato a todas las diapositivas (sin añadir logo en las demás) ---
+    # Aplicar reglas a todas las diapositivas
     for slide in prs.slides:
         for shp in slide.shapes:
             try:
@@ -194,7 +174,7 @@ def process_presentation(file_bytes: bytes, filename: str) -> bytes:
             except Exception:
                 pass
 
-    # --- Aplicar formato también a layouts ---
+    # Aplicar a layouts
     for layout in prs.slide_layouts:
         for shp in layout.shapes:
             try:
@@ -249,7 +229,7 @@ def download_token(token: str):
 
 @app.get("/")
 async def root():
-    return {"message": "API de Formateo de PPTX funcionando", "version": "1.0.0"}
+    return {"message": "API de Formateo de PPTX funcionando", "version": "1.0.1"}
 
 
 @app.get("/health")
