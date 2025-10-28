@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pptx import Presentation
 from pptx.util import Inches
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import PP_PLACEHOLDER_TYPE
 from PIL import Image
 
 # =========================
@@ -41,7 +42,7 @@ FONT = "Century Gothic"
 
 LEFT_MARGIN_IN = 0.25
 BOTTOM_MARGIN_IN = 0.25
-LOGO_WIDTH_IN = 1.30
+
 EMU_PER_INCH = 914400
 
 # =========================
@@ -61,7 +62,7 @@ ALLOWED_ORIGINS = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,   # ✅ ahora sí aplica tu lista
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -122,26 +123,78 @@ def apply_rules(shape):
 def process_presentation(file_bytes: bytes, filename: str) -> bytes:
     prs = Presentation(io.BytesIO(file_bytes))
 
-    for slide in prs.slides:
-        # Insertar logo desde assets
-        pic = slide.shapes.add_picture(
-            DEFAULT_LOGO_PATH,
-            left=Inches(LEFT_MARGIN_IN),
-            top=Inches(1.0),
-            width=Inches(LOGO_WIDTH_IN)
-        )
-        slide_h_in = prs.slide_height / EMU_PER_INCH
-        img_h_in = pic.height / EMU_PER_INCH
-        pic.top = Inches(slide_h_in - img_h_in - BOTTOM_MARGIN_IN)
+    def _bbox_union(shapes):
+        """Devuelve (left, top, width, height) en EMUs que cubre todos los shapes dados."""
+        lefts = [s.left for s in shapes]
+        tops = [s.top for s in shapes]
+        rights = [s.left + s.width for s in shapes]
+        bottoms = [s.top + s.height for s in shapes]
+        return min(lefts), min(tops), max(rights) - min(lefts), max(bottoms) - min(tops)
 
-        # Aplicar reglas
+    # --- Insertar logo solo en la primera diapositiva, centrado respecto al bloque de texto ---
+    if len(prs.slides) > 0:
+        slide0 = prs.slides[0]
+
+        # 1) Buscar placeholders de título/subtítulo con texto
+        title_like = []
+        for s in slide0.shapes:
+            try:
+                if not s.is_placeholder:
+                    continue
+                ph_type = s.placeholder_format.type
+                if ph_type in (
+                    PP_PLACEHOLDER_TYPE.TITLE,
+                    PP_PLACEHOLDER_TYPE.CENTER_TITLE,
+                    PP_PLACEHOLDER_TYPE.SUBTITLE,
+                ):
+                    if hasattr(s, "text_frame") and s.text_frame and s.text_frame.text.strip():
+                        title_like.append(s)
+            except Exception:
+                pass
+
+        # 2) Si no hay placeholders útiles, tomar el cuadro de texto más grande
+        if not title_like:
+            text_shapes = []
+            for s in slide0.shapes:
+                if hasattr(s, "text_frame") and s.text_frame and s.text_frame.text.strip():
+                    text_shapes.append(s)
+            if text_shapes:
+                title_like = [max(text_shapes, key=lambda x: x.width * x.height)]
+
+        # 3) Centrar logo dentro de esa caja de referencia
+        if title_like:
+            ref_left, ref_top, ref_w, ref_h = _bbox_union(title_like)
+
+            # Tamaño "medio": ~35% del ancho del bloque de texto (entre 1.2" y 4.5")
+            ref_w_in = ref_w / EMU_PER_INCH
+            logo_w_in = max(1.2, min(ref_w_in * 0.35, 4.5))
+
+            pic = slide0.shapes.add_picture(
+                DEFAULT_LOGO_PATH,
+                left=Inches(0), top=Inches(0), width=Inches(logo_w_in)
+            )
+
+            # Posicionar centrado dentro de la caja
+            img_w = pic.width
+            img_h = pic.height
+            pic.left = ref_left + (ref_w - img_w) // 2
+            pic.top = ref_top + (ref_h - img_h) // 2
+
+            # Si quieres bajarlo un poco dentro del bloque, descomenta:
+            # from pptx.util import Pt
+            # pic.top += Inches(0.2)
+
+        # Si no hay texto en la portada, no se inserta el logo
+
+    # --- Aplicar formato a todas las diapositivas (sin añadir logo en las demás) ---
+    for slide in prs.slides:
         for shp in slide.shapes:
             try:
                 apply_rules(shp)
             except Exception:
                 pass
 
-    # También layouts
+    # --- Aplicar formato también a layouts ---
     for layout in prs.slide_layouts:
         for shp in layout.shapes:
             try:
@@ -202,5 +255,4 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "message": "API funcionando correctamente"}
-
 
