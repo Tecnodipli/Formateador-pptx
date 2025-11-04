@@ -36,7 +36,7 @@ if not os.path.exists(DEFAULT_LOGO_PATH):
 # Configuración de formateo
 # =========================
 TITLE_SIZE = 20
-TITLE_COLOR = RGBColor(75, 0, 130)   # morado oscuro
+TITLE_COLOR = RGBColor(0, 0, 0)   # negro
 NORMAL_COLOR = RGBColor(0, 0, 0)     # negro
 FONT = "Century Gothic"
 EMU_PER_INCH = 914400
@@ -235,4 +235,5 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "message": "API funcionando correctamente"}
+
 
